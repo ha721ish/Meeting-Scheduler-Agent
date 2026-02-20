@@ -1,0 +1,433 @@
+// app.js
+
+const API_URL = "http://127.0.0.1:8000";
+
+// Default Demo Data
+const DEMO_CALENDAR = `MONDAY
+09:00 AM - 10:00 AM: Weekly Team Sync
+13:00 PM - 14:00 PM: Deep Work Block
+
+TUESDAY
+10:00 AM - 11:00 AM: Client Introduction Call
+14:00 PM - 15:00 PM: Project Review
+
+WEDNESDAY
+09:00 AM - 12:00 PM: Coding Sprint (Do not disturb)
+15:00 PM - 15:30 PM: 1:1 with Manager
+
+THURSDAY
+11:00 AM - 12:00 PM: All Hands Meeting`;
+
+const DEMO_PREFS = `I need to schedule a 30-minute sync with the design team.
+Avoid Tuesday mornings.
+Wednesday afternoon is best.
+Ensure it doesn't overlap with existing meetings.`;
+
+// Load demo data on startup & init counters
+window.addEventListener('DOMContentLoaded', () => {
+    const calInput = document.getElementById('calendar-input');
+    const prefInput = document.getElementById('preferences-input');
+
+    calInput.value = DEMO_CALENDAR;
+    prefInput.value = DEMO_PREFS;
+
+    // Initial count
+    updateCharCount('calendar-input', 'calendar-count');
+    updateCharCount('preferences-input', 'prefs-count');
+
+    // Listeners
+    calInput.addEventListener('input', () => updateCharCount('calendar-input', 'calendar-count'));
+    prefInput.addEventListener('input', () => updateCharCount('preferences-input', 'prefs-count'));
+
+    // API Key Validation Listener
+    const apiKeyInput = document.getElementById('api-key-input');
+    const warning = document.getElementById('api-warning');
+    const btn = document.getElementById('optimize-btn');
+
+    apiKeyInput.addEventListener('input', () => {
+        if (apiKeyInput.value.trim().length > 0) {
+            warning.style.display = 'none';
+            btn.classList.remove('btn-disabled');
+            btn.innerHTML = "✨ Generate Master Schedule";
+        } else {
+            btn.classList.add('btn-disabled');
+            btn.innerHTML = "🔒 <strong>Unlock AI Agent</strong>"; // Bold for emphasis
+        }
+    });
+
+    // Trigger initial state
+    apiKeyInput.dispatchEvent(new Event('input'));
+});
+
+function updateCharCount(inputId, labelId) {
+    const len = document.getElementById(inputId).value.length;
+    document.getElementById(labelId).innerText = `${len} chars`;
+}
+
+async function scheduleMeeting() {
+    const calendarInput = document.getElementById('calendar-input').value;
+    const preferencesInput = document.getElementById('preferences-input').value;
+    const apiKey = document.getElementById('api-key-input').value;
+    const geminiKey = document.getElementById('gemini-key-input').value;
+    const modelIndex = document.getElementById('gemini-model-select').value;
+    let selectedModel = modelIndex;
+
+    if (modelIndex === 'custom') {
+        selectedModel = document.getElementById('gemini-model-custom').value;
+        if (!selectedModel || selectedModel.trim() === "") {
+            alert("Please enter a Custom Model ID!");
+            return;
+        }
+    }
+
+    // Validation
+    if (!apiKey || apiKey.trim() === "") {
+        document.getElementById('api-warning').style.display = 'block';
+        document.getElementById('api-key-input').focus();
+        alert("Please enter a valid ScaleDown API Key to proceed!");
+        return;
+    }
+
+    if (!geminiKey || geminiKey.trim() === "") {
+        document.getElementById('gemini-key-input').focus();
+        alert("Please enter a valid Gemini API Key to proceed! (Required for Schedule Generation)");
+        return;
+    }
+
+    if (!geminiKey || geminiKey.trim() === "") {
+        document.getElementById('gemini-key-input').focus();
+        alert("Please enter a valid Gemini API Key to proceed! (Required for Schedule Generation)");
+        return;
+    }
+
+    // Elements
+    const loading = document.getElementById('loading');
+    const results = document.getElementById('results');
+
+    // UI Reset
+    loading.classList.remove('hidden');
+    results.classList.add('hidden');
+    document.getElementById('revised-schedule-container').classList.add('hidden');
+
+    try {
+        const response = await fetch(`${API_URL}/optimize`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                calendar_text: calendarInput,
+                preferences_text: preferencesInput,
+                api_key: apiKey,
+                gemini_api_key: geminiKey,
+                gemini_model: selectedModel // Send model choice
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server Error: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        renderResults(data);
+
+    } catch (error) {
+        console.warn("Backend Unreachable. Trying direct ScaleDown API call...", error);
+
+        // --- DIRECT API MODE (GitHub Pages) ---
+        // Try calling ScaleDown API directly from the browser
+        try {
+            const directData = await callScaleDownDirect(calendarInput, preferencesInput, apiKey);
+
+            const scheduleOutput = document.getElementById('schedule-output');
+            scheduleOutput.innerText = "🌐 Running via Direct API Mode (No Backend Required)\n\n" + directData.compressed_text;
+
+            renderResults(directData);
+        } catch (apiError) {
+            console.error("Direct ScaleDown API failed.", apiError);
+            const scheduleOutput = document.getElementById('schedule-output');
+            scheduleOutput.innerText = `❌ Error: ${apiError.message}`;
+            alert(`Error: ${apiError.message}`);
+        }
+    } finally {
+        loading.classList.add('hidden');
+    }
+}
+
+/**
+ * Calls the ScaleDown API directly from the browser (no backend needed).
+ * Then calls Gemini API directly for REAL schedule generation.
+ */
+async function callScaleDownDirect(calendarText, preferencesText, apiKey) {
+    const geminiKey = document.getElementById('gemini-key-input').value;
+    const modelIndex = document.getElementById('gemini-model-select').value;
+    let selectedModel = modelIndex;
+    if (modelIndex === 'custom') {
+        selectedModel = document.getElementById('gemini-model-custom').value || 'gemini-2.0-flash';
+    }
+
+    const rawSize = calendarText.length + preferencesText.length;
+
+    // --- Stage 1: ScaleDown Compression ---
+    const t0 = performance.now();
+
+    const response = await fetch("https://api.scaledown.xyz/compress/raw/", {
+        method: 'POST',
+        headers: {
+            'x-api-key': apiKey,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            context: calendarText,
+            prompt: `Based on the context, schedule a meeting with these constraints: ${preferencesText}`,
+            model: "gpt-4o",
+            scaledown: {
+                rate: "auto"
+            }
+        })
+    });
+
+    const t1 = performance.now();
+    const compressionLatency = t1 - t0;
+
+    if (!response.ok) {
+        throw new Error(`ScaleDown API Error: ${response.status} - ${response.statusText}`);
+    }
+
+    const data = await response.json();
+
+    // Extract compressed text (same logic as backend scaledown_svc.py)
+    const results = data.results || {};
+    let compressedText = results.compressed_prompt || data.compressed_prompt || data.compressed_text || data.text || JSON.stringify(data);
+
+    const compressedSize = compressedText.length;
+
+    // --- Stage 2: Gemini Schedule Generation ---
+    let scheduleText = "";
+    let generationLatency = 0;
+
+    // Gemini Key is now mandatory, so we expect it to be present.
+    // If it was missing, we would have caught it in validation before calling this function.
+
+    console.log("🤖 Calling Gemini API directly from browser...");
+    const t2 = performance.now();
+    try {
+        scheduleText = await callGeminiDirect(compressedText, preferencesText, geminiKey, selectedModel);
+    } catch (geminiErr) {
+        console.error("Gemini API Failed", geminiErr);
+        throw geminiErr; // Propagate error to caller
+    }
+    const t3 = performance.now();
+    generationLatency = t3 - t2;
+    console.log(`✅ Gemini responded in ${generationLatency.toFixed(0)}ms`);
+
+    const totalLatency = compressionLatency + generationLatency;
+
+    return {
+        "status": "success",
+        "schedule": scheduleText,
+        "compressed_text": compressedText,
+        "metrics": {
+            "raw_input_size": rawSize,
+            "compressed_input_size": compressedSize,
+            "compression_ratio": `${(100 * (1 - compressedSize / (rawSize || 1))).toFixed(1)}%`,
+            "compression_latency_ms": compressionLatency.toFixed(0),
+            "generation_latency_ms": generationLatency.toFixed(0),
+            "total_pipeline_ms": totalLatency.toFixed(0),
+            "speedup_factor": generationLatency > 0 ? `Real AI` : "N/A (No Gemini Key)"
+        }
+    };
+}
+
+/**
+ * Calls Google Gemini REST API directly from the browser.
+ * Uses the same prompt structure as backend/generative_svc.py.
+ */
+async function callGeminiDirect(compressedText, preferencesText, geminiKey, modelName) {
+    // Gemini REST API endpoint
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+
+    const prompt = `You are an expert meeting scheduler.
+Based on the following compressed calendar context and user preferences, propose 3 optimal meeting times.
+
+COMPRESSED CALENDAR CONTEXT:
+${compressedText}
+
+USER PREFERENCES:
+${preferencesText}
+
+OUTPUT FORMAT (JSON ONLY):
+Return a valid JSON array with exactly 3 meeting options. Each option must have:
+- "title": Short title (max 5 words)
+- "date": Day name from the calendar (e.g., "Monday", "Tuesday")
+- "time": Time range (e.g., "10:00 AM - 11:00 AM")
+- "duration": Duration in minutes (number)
+- "reasoning": One sentence, max 15 words, explaining why this slot works
+
+Keep the entire response under 500 characters. Return ONLY the JSON array. No markdown, no code fences, no extra text.`;
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            contents: [{
+                parts: [{
+                    text: prompt
+                }]
+            }],
+            generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 8192,
+                // Disable "thinking" for gemini-2.5 models so all tokens go to the answer
+                thinkingConfig: { thinkingBudget: 0 }
+            }
+        })
+    });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        const errMsg = errData?.error?.message || response.statusText;
+        throw new Error(`Gemini API Error (${response.status}): ${errMsg}`);
+    }
+
+    const result = await response.json();
+
+    // Extract text from Gemini response
+    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+        throw new Error("Gemini returned empty response");
+    }
+
+    // Clean markdown fences if present
+    let cleanText = text.trim();
+    if (cleanText.startsWith('```json')) {
+        cleanText = cleanText.replace(/```json\n?/g, '').replace(/```/g, '');
+    } else if (cleanText.startsWith('```')) {
+        cleanText = cleanText.replace(/```\n?/g, '');
+    }
+    cleanText = cleanText.trim();
+
+    // Try to fix truncated JSON (unterminated strings)
+    try {
+        JSON.parse(cleanText);
+    } catch (e) {
+        console.warn("Gemini JSON needs repair, attempting fix...");
+        // Try closing any unclosed strings, objects, and arrays
+        let fixed = cleanText;
+        // Count brackets to see what's missing
+        const openBraces = (fixed.match(/{/g) || []).length;
+        const closeBraces = (fixed.match(/}/g) || []).length;
+        const openBrackets = (fixed.match(/\[/g) || []).length;
+        const closeBrackets = (fixed.match(/\]/g) || []).length;
+
+        // If truncated mid-string, close the string and object
+        if (fixed.endsWith('"') || /[a-zA-Z0-9.,!? ]$/.test(fixed)) {
+            if (!fixed.endsWith('"')) fixed += '"';
+            for (let i = 0; i < openBraces - closeBraces; i++) fixed += '}';
+            for (let i = 0; i < openBrackets - closeBrackets; i++) fixed += ']';
+        }
+
+        try {
+            JSON.parse(fixed);
+            cleanText = fixed;
+            console.log("✅ JSON repair successful");
+        } catch (e2) {
+            console.warn("JSON repair failed, returning raw text");
+        }
+    }
+
+    return cleanText;
+}
+
+
+
+function renderResults(data) {
+    const results = document.getElementById('results');
+    const outputJson = document.getElementById('output-json');
+    const scheduleOutput = document.getElementById('schedule-output');
+    const revisedContainer = document.getElementById('revised-schedule-container');
+
+    // Reset container
+    revisedContainer.classList.add('hidden');
+    document.getElementById('calendar-grid').innerHTML = '';
+
+    // Render Metrics (Compression Focus)
+    document.getElementById('metric-original').innerText = `${data.metrics.raw_input_size} chars`;
+    document.getElementById('metric-compressed').innerText = `${data.metrics.compressed_input_size} chars`;
+    const ratio = data.metrics.compression_ratio;
+    // Handle percentage string or number
+    document.getElementById('metric-ratio').innerText = typeof ratio === 'number' ? `${(ratio * 100).toFixed(1)}%` : ratio;
+
+    // Render Compressed Output
+    if (data.compressed_text) {
+        // If not already set by the error handler
+        if (!scheduleOutput.innerText.startsWith('⚠️') && !scheduleOutput.innerText.startsWith('🌐')) {
+            scheduleOutput.innerText = data.compressed_text;
+        }
+    } else {
+        scheduleOutput.innerText = "Error: No compressed text returned.";
+    }
+
+    // Render Revised Schedule (Stage 2)
+    if (data.schedule && data.schedule.trim() !== "") {
+        const calendarGrid = document.getElementById('calendar-grid');
+
+        // Try to parse as JSON first
+        try {
+            // Clean potential markdown formatting
+            let cleanSchedule = data.schedule.trim();
+            if (cleanSchedule.startsWith('```json')) {
+                cleanSchedule = cleanSchedule.replace(/```json\n?/g, '').replace(/```/g, '');
+            } else if (cleanSchedule.startsWith('```')) {
+                cleanSchedule = cleanSchedule.replace(/```\n?/g, '');
+            }
+
+            const meetings = JSON.parse(cleanSchedule);
+
+            // Clear previous content
+            calendarGrid.innerHTML = '';
+
+            // Render each meeting as a card
+            meetings.forEach((meeting, index) => {
+                const card = document.createElement('div');
+                card.className = 'calendar-card';
+                card.innerHTML = `
+                    <div class="calendar-card-title">${meeting.title || `Option ${index + 1}`}</div>
+                    <div class="calendar-card-meta">
+                        <div class="calendar-card-item">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                            </svg>
+                            <span>${meeting.date}</span>
+                        </div>
+                        <div class="calendar-card-item">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <span>${meeting.time} (${meeting.duration} min)</span>
+                        </div>
+                    </div>
+                    <div class="calendar-card-reasoning">
+                        <strong>Why this works:</strong> ${meeting.reasoning}
+                    </div>
+                `;
+                calendarGrid.appendChild(card);
+            });
+
+            revisedContainer.classList.remove('hidden');
+        } catch (e) {
+            // Fallback: render as text if JSON parsing fails
+            console.warn('Failed to parse schedule as JSON, rendering as text:', e);
+            calendarGrid.innerHTML = `<pre style="white-space: pre-wrap; font-family: 'Inter', sans-serif;">${data.schedule}</pre>`;
+            revisedContainer.classList.remove('hidden');
+        }
+    }
+
+    // Render JSON (Hidden)
+    outputJson.textContent = JSON.stringify(data, null, 2);
+    results.classList.remove('hidden');
+}
+
+
